@@ -72,7 +72,7 @@ visualizer:
 
 visualizer_test:
   vis_dir: vis_test/
-  img_dir: *img_test_dir
+  img_dir: *img_dir
   activation: sigmoid # [null, sigmoid]
   normalization: True
   with_image: True

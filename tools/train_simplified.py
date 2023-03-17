@@ -13,7 +13,7 @@ sys.path.append('./')
 
 
 import yaml
-from datasets.data_builder import build_dataloader
+from datasets.data_builder import build_dataloader, build_custom_dataloader
 from easydict import EasyDict
 from models.model_helper import build_network
 from datasets.custom_exemplar_dataset import build_custom_exemplar_dataloader
@@ -53,6 +53,7 @@ def train(model, loader, valid_loader, criterion, opt, scheduler, config, scaler
     for p in model.backbone.parameters():
         p.requires_grad = False
 
+    weight = config.criterion[0].kwargs.weight
     train_loss_ = AverageMeter()
     wandb.log({'Epoch': epoch})
     loop = tqdm(loader, position = 0, leave = True)
@@ -67,7 +68,7 @@ def train(model, loader, valid_loader, criterion, opt, scheduler, config, scaler
         with torch.cuda.amp.autocast_mode.autocast():
 
             pred = model(data)
-            train_loss = 250 * criterion(pred)
+            train_loss = weight * criterion(pred)
 
         scaler.scale(train_loss).backward()
         scaler.step(opt)
@@ -111,6 +112,7 @@ def val(model, valid_loader, criterion, vis_obj, config):
     os.makedirs(config.evaluator.eval_dir, exist_ok = True)
     val_loss_ = AverageMeter()
     val_rmse, val_mae = 0, 0
+    weight = config.criterion[0].kwargs.weight
     loop = tqdm(valid_loader, position = 0, leave = True)
 
     for idx, data in enumerate(loop):
@@ -118,7 +120,7 @@ def val(model, valid_loader, criterion, vis_obj, config):
         data = to_device(data, torch.device('cuda'))
         val_loss = 0
         pred = model(data)
-        val_loss = 250 * criterion(pred)
+        val_loss = weight * criterion(pred)
         val_loss_.update(val_loss.detach(), 1)
         density = pred['density']
         density_pred = pred['density_pred']
@@ -187,8 +189,13 @@ def main():
     if random_seed:
         set_random_seed(random_seed)
     
-    train_loader = build_custom_exemplar_dataloader(config, True, False)
-    valid_loader = build_custom_exemplar_dataloader(config, False, False)
+    if config.dataset.type == 'custom_exempler':
+        train_loader = build_custom_exemplar_dataloader(config, True, False)
+        valid_loader = build_custom_exemplar_dataloader(config, False, False)
+    
+    if config.dataset.type == 'custom':
+        train_loader = build_custom_dataloader(config, True, False)
+        valid_loader = build_custom_dataloader(config, False, False)
 
     model = build_network(config.net)
     model.cuda()
@@ -205,7 +212,7 @@ def main():
     parameters = [p for n, p in model.named_parameters() if "backbone" not in n]
     opt = get_optimizer(parameters, config.trainer.optimizer)
     scheduler = get_scheduler(opt, config.trainer.lr_scheduler)
-    criterion = _MSELoss(1, 250)
+    criterion = _MSELoss(**config.criterion[0].kwargs)
     
     scaler = torch.cuda.amp.grad_scaler.GradScaler()
     vis_obj = Visualizer(**config.visualizer)
