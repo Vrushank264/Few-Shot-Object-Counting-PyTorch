@@ -14,7 +14,7 @@ sys.path.append('./')
 
 
 import yaml
-from datasets.data_builder import build_dataloader
+from datasets.data_builder import build_dataloader, build_custom_dataloader
 from easydict import EasyDict
 from models.model_helper import build_network
 from datasets.custom_exemplar_dataset import build_custom_exemplar_dataloader
@@ -90,7 +90,7 @@ def train(model, loader, valid_loader, criterion, opt, scheduler, config, scaler
                 'Difference': abs(gt_count - pred_count)
             })
 
-            text = f'GT: {gt_count} & pred: {pred_count}'
+            text = f'GT: {int(gt_count)} & pred: {int(pred_count)}'
             op, scoremap = vis_obj.vis_result1(data["filename"], data["filename"], data["height"], data["width"], density_pred[0])
             op_gt, scoremap_gt = vis_obj.vis_result1(data["filename"], data["filename"], data["height"], data["width"], density[0])
             op = cv2.putText(op, text, (100, 25), cv2.FONT_HERSHEY_SIMPLEX, 
@@ -111,7 +111,7 @@ def val(model, valid_loader, criterion, vis_obj, config):
 
     print('Validating...')
     model.eval()
-
+    os.makedirs(config.evaluator.eval_dir, exist_ok = True)
     val_loss_ = AverageMeter()
     val_rmse, val_mae = 0, 0
     weight = config.criterion[0].kwargs.weight
@@ -128,10 +128,11 @@ def val(model, valid_loader, criterion, vis_obj, config):
         density_pred = pred['density_pred']
         gt_count = torch.sum(density).item()
         pred_count = torch.sum(density_pred).item()
+        dump(config.evaluator.eval_dir, pred)
 
         if idx % 200 == 0:
             
-            text = f'GT: {gt_count} & pred: {pred_count}'
+            text = f'GT: {int(gt_count)} & pred: {int(pred_count)}'
             op, scoremap = vis_obj.vis_result1(data["filename"], data["filename"], data["height"], data["width"], density_pred[0])
             op_gt, scoremap_gt = vis_obj.vis_result1(data["filename"], data["filename"], data["height"], data["width"], density[0])
             ip_img = data["image_np"].cpu().detach().numpy().astype(np.uint8)
@@ -194,8 +195,13 @@ def main():
     if random_seed:
         set_random_seed(random_seed)
     
-    train_loader = build_custom_exemplar_dataloader(config, True, False)
-    valid_loader = build_custom_exemplar_dataloader(config, False, False)
+    if config.dataset.type == 'custom_exempler':
+        train_loader = build_custom_exemplar_dataloader(config, True, False)
+        valid_loader = build_custom_exemplar_dataloader(config, False, False)
+    
+    if config.dataset.type == 'custom':
+        train_loader = build_custom_dataloader(config, True, False)
+        valid_loader = build_custom_dataloader(config, False, False)
 
     model = build_network(config.net)
     model.cuda()
@@ -204,7 +210,7 @@ def main():
     if (args.resume):
       if args.checkpoint_path != "":
         ckpt = torch.load(args.checkpoint_path)
-        model.load_state_dict(ckpt)
+        model.load_state_dict(ckpt["state_dict"])
         print("Model Loaded!")
     
     print('Model Loaded!')
@@ -219,12 +225,13 @@ def main():
     
     scaler = torch.cuda.amp.grad_scaler.GradScaler()
     vis_obj = Visualizer(**config.visualizer)
+    vis_obj1 = Visualizer(**config.visualizer_test)
     best_mae, best_rmse = float('inf'), float('inf')
     for epoch in range(1, config.trainer.epochs + 1):
 
         train(model, train_loader, valid_loader, criterion, opt, scheduler, config,scaler, vis_obj, epoch)
         if epoch % 2 == 0:
-            mae, rmse = val(model, valid_loader, criterion, vis_obj, config)
+            mae, rmse = val(model, valid_loader, criterion, vis_obj1, config)
             if (mae < best_mae) or (rmse < best_rmse) or (epoch % 10 == 0):
                 torch.save(model.state_dict(), config.saver.save_dir + f"model_{epoch}_rmse_{int(rmse)}.pth")
                 best_mae, best_rmse = mae, rmse
