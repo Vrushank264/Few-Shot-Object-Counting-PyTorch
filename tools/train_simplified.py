@@ -80,7 +80,7 @@ def train(model, loader, valid_loader, criterion, opt, scheduler, config, scaler
         gt_count = torch.sum(density).item()
         pred_count = torch.sum(density_pred).item()
 
-        if idx % 50 == 0:
+        if idx % 500 == 0:
 
             wandb.log({
                 'Loss': train_loss_.avg,
@@ -128,7 +128,7 @@ def val(model, valid_loader, criterion, vis_obj, config):
         pred_count = torch.sum(density_pred).item()
         dump(config.evaluator.eval_dir, pred)
 
-        if idx % 20 == 0:
+        if idx % 200 == 0:
             
             text = f'GT: {gt_count} & pred: {pred_count}'
             op, scoremap = vis_obj.vis_result1(data["filename"], data["filename"], data["height"], data["width"], density_pred[0])
@@ -223,8 +223,8 @@ def main():
         train(model, train_loader, valid_loader, criterion, opt, scheduler, config,scaler, vis_obj, epoch)
         if epoch % 2 == 0:
             mae, rmse = val(model, valid_loader, criterion, vis_obj1, config)
-            if (mae < best_mae) and (rmse < best_rmse):
-                torch.save(model.state_dict(), config.saver.save_dir + f"model_{epoch}.pth")
+            if (mae < best_mae) and (rmse < best_rmse) or (epoch % 10 == 0):
+                torch.save(model.state_dict(), config.saver.save_dir + f"model_{epoch}_rmse_{int(rmse)}.pth")
                 best_mae, best_rmse = mae, rmse
         
 

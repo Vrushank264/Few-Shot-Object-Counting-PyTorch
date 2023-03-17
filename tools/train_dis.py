@@ -42,6 +42,8 @@ parser.add_argument(
 parser.add_argument("-e", "--evaluate", action="store_true")
 parser.add_argument("-t", "--test", action="store_true")
 parser.add_argument("--local_rank", default=0, help="local rank for dist")
+parser.add_argument('--resume', default=False, help='Resume training.')
+parser.add_argument('--checkpoint_path', default='/content/checkpoints/model_4.pth')
 
 
 def train(model, loader, valid_loader, criterion, opt, scheduler, config, scaler, vis_obj, epoch):
@@ -54,6 +56,7 @@ def train(model, loader, valid_loader, criterion, opt, scheduler, config, scaler
         p.requires_grad = False
 
     train_loss_ = AverageMeter()
+    weight = config.criterion[0].kwargs.weight
     wandb.log({'Epoch': epoch})
     loop = tqdm(loader, position = 0, leave = True)
 
@@ -67,20 +70,19 @@ def train(model, loader, valid_loader, criterion, opt, scheduler, config, scaler
         with torch.cuda.amp.autocast_mode.autocast():
 
             pred = model(data)
-            train_loss = 250 * criterion(pred)
+            train_loss = weight * criterion(pred)
 
         scaler.scale(train_loss).backward()
         scaler.step(opt)
         scaler.update()
 
         density = pred['density']
-
         density_pred = pred['density_pred']
         train_loss_.update(train_loss.detach(), 1)
         gt_count = torch.sum(density).item()
         pred_count = torch.sum(density_pred).item()
 
-        if idx % 50 == 0:
+        if idx % 500 == 0:
 
             wandb.log({
                 'Loss': train_loss_.avg,
@@ -88,14 +90,19 @@ def train(model, loader, valid_loader, criterion, opt, scheduler, config, scaler
                 'Difference': abs(gt_count - pred_count)
             })
 
-
+            text = f'GT: {gt_count} & pred: {pred_count}'
             op, scoremap = vis_obj.vis_result1(data["filename"], data["filename"], data["height"], data["width"], density_pred[0])
+            op_gt, scoremap_gt = vis_obj.vis_result1(data["filename"], data["filename"], data["height"], data["width"], density[0])
+            op = cv2.putText(op, text, (100, 25), cv2.FONT_HERSHEY_SIMPLEX, 
+                   1, (255,255,255), 2, cv2.LINE_AA)
             w_img = wandb.Image(op)
             ip_img = data["image_np"].cpu().detach().numpy().astype(np.uint8)
             wandb.log({
                 'Input': wandb.Image(ip_img),
                 'Predicted density': w_img,
-                'Scoremap': wandb.Image(scoremap)
+                'Scoremap': wandb.Image(scoremap),
+                'Target': wandb.Image(op_gt),
+                'Target Scoremap': wandb.Image(scoremap_gt)
             })
 
     
@@ -107,6 +114,7 @@ def val(model, valid_loader, criterion, vis_obj, config):
 
     val_loss_ = AverageMeter()
     val_rmse, val_mae = 0, 0
+    weight = config.criterion[0].kwargs.weight
     loop = tqdm(valid_loader, position = 0, leave = True)
 
     for idx, data in enumerate(loop):
@@ -114,25 +122,31 @@ def val(model, valid_loader, criterion, vis_obj, config):
         data = to_device(data, torch.device('cuda'))
         val_loss = 0
         pred = model(data)
-        val_loss = 250 * criterion(pred)
+        val_loss = weight * criterion(pred)
         val_loss_.update(val_loss.detach(), 1)
         density = pred['density']
         density_pred = pred['density_pred']
         gt_count = torch.sum(density).item()
         pred_count = torch.sum(density_pred).item()
 
-        if idx % 20 == 0:
+        if idx % 200 == 0:
             
-            op = vis_obj.vis_result1(data["filename"], data["filename"], data["height"], data["width"], pred[0])
+            text = f'GT: {gt_count} & pred: {pred_count}'
+            op, scoremap = vis_obj.vis_result1(data["filename"], data["filename"], data["height"], data["width"], density_pred[0])
+            op_gt, scoremap_gt = vis_obj.vis_result1(data["filename"], data["filename"], data["height"], data["width"], density[0])
             ip_img = data["image_np"].cpu().detach().numpy().astype(np.uint8)
+            op = cv2.putText(op, text, (100, 25), cv2.FONT_HERSHEY_SIMPLEX, 
+                   1, (255,255,255), 2, cv2.LINE_AA)
             w_img = wandb.Image(op)
             wandb.log({
-                'Val Input': wandb.Image(data["image_np"]),
                 'Validation Loss': val_loss_.avg,
                 'Val GT count': gt_count,
                 'Val Pred count': pred_count,
                 'Valid Ip': wandb.Image(ip_img),
-                'Valid Pred Image': w_img
+                'Valid Pred Image': w_img,
+                'Valid Scoremap': wandb.Image(scoremap),
+                'Valid Target': wandb.Image(op_gt),
+                'Valid Target Scoremap': wandb.Image(scoremap_gt)
             })
 
     
@@ -186,14 +200,12 @@ def main():
     model = build_network(config.net)
     model.cuda()
     model = DDP(model, find_unused_parameters=True)
-    #print(model)
-    #model.load_state_dict(torch.load('/content/ckpt_best.pth.tar'))
-    #print('Model Loaded!')
-    model2 = torch.load('/content/ckpt_best.pth.tar')
-    print(model2["state_dict"].keys())
-    torch.save(model2["state_dict"], 'model.pth')
-    print(type(model2))
-    model.load_state_dict(model2["state_dict"])
+
+    if (args.resume):
+      if args.checkpoint_path != "":
+        ckpt = torch.load(args.checkpoint_path)
+        model.load_state_dict(ckpt)
+        print("Model Loaded!")
     
     print('Model Loaded!')
     model.module.backbone.eval()
@@ -203,7 +215,7 @@ def main():
     parameters = [p for n, p in model.module.named_parameters() if "backbone" not in n]
     opt = get_optimizer(parameters, config.trainer.optimizer)
     scheduler = get_scheduler(opt, config.trainer.lr_scheduler)
-    criterion = _MSELoss(1, 250)
+    criterion = _MSELoss(**config.criterion[0].kwargs)
     
     scaler = torch.cuda.amp.grad_scaler.GradScaler()
     vis_obj = Visualizer(**config.visualizer)
@@ -213,8 +225,8 @@ def main():
         train(model, train_loader, valid_loader, criterion, opt, scheduler, config,scaler, vis_obj, epoch)
         if epoch % 2 == 0:
             mae, rmse = val(model, valid_loader, criterion, vis_obj, config)
-            if (mae < best_mae) and (rmse < best_rmse):
-                torch.save(model.state_dict(), config.saver.save_dir + f"model_{epoch}.pth")
+            if (mae < best_mae) or (rmse < best_rmse) or (epoch % 10 == 0):
+                torch.save(model.state_dict(), config.saver.save_dir + f"model_{epoch}_rmse_{int(rmse)}.pth")
                 best_mae, best_rmse = mae, rmse
         
 
