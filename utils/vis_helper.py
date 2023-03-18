@@ -87,6 +87,7 @@ class Visualizer(ABC):
         if self.with_image:
             img_path = os.path.join(self.img_dir, filename[0])
             image = cv2.imread(img_path)
+            image = cv2.resize(image, (512, 512))
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             output, scoremap = self.apply_scoremap(image, output)
             #output = cv2.cvtColor(output, cv2.COLOR_RGB2BGR)
