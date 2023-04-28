@@ -213,7 +213,6 @@ def main():
         model.load_state_dict(ckpt["state_dict"])
         print("Model Loaded!")
     
-    print('Model Loaded!')
     model.module.backbone.eval()
     for p in model.module.backbone.parameters():
         p.requires_grad = False
