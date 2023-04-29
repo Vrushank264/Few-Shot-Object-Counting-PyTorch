@@ -76,26 +76,64 @@ class ExportModel(nn.Module):
             data = {"image": img, "boxes": boxes}
             pred = self.model(data)
             op = torch.sum(pred["density_pred"]).item()
-            return int(op)
-        
-args, config = arg_parse()
-model = load_model(config, args.ckpt_path)
-exp_model = ExportModel(model)
-img, boxes = get_data()
+            return op, pred["density_pred"]
 
-torch.cuda.synchronize()
+@torch.no_grad()
+def infer_og_model(exp_model, img, boxes):
 
-with torch.no_grad():
-    out = exp_model(img, boxes)
-
-torch.cuda.synchronize()
-print(out)
+    torch.cuda.synchronize()
+    out, pred_density = exp_model(img, boxes)
+    torch.cuda.synchronize()
+    return int(out), pred_density
 
 
-            
+def trace(model, data):
+
+    with torch.inference_mode(), torch.jit.optimized_execution(True):
+        traced_script = torch.jit.trace(model, data)
+        traced_script = torch.jit.optimize_for_inference(traced_script)
+    
+    print(traced_script.code)
+    return traced_script
 
 
+@torch.no_grad()
+def load_and_check_traced_model(traced_model_path, data):
+
+    model = torch.jit.load(traced_model_path)
+    pred, density_pred = model(data)
+    return int(pred), density_pred
 
 
+def main():
+
+    img_path = ""
+    boxes = []
+    out_dir = ""
+
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir)
+
+    args, config = arg_parse()
+    model = load_model(config, args.ckpt_path)
+    exp_model = ExportModel(model)
+    img, boxes = get_data(img_path, boxes)
+
+    data = {
+        "image": img, 
+        "boxes": boxes
+    }
+    og_count, og_pred_density = infer_og_model(exp_model, img, boxes)
+    traced_model = trace(exp_model)
+    save_path = os.path.join(out_dir, "traced_model.pt")
+    traced_model.save(save_path)
+    traced_model_count, traced_model_density = load_and_check_traced_model(save_path, data)
+
+    np.testing.assert_allclose(
+        traced_model_density.cpu().numpy(), og_pred_density.cpu().numpy(), rtol = 1e-2, atol = 1
+    )
 
 
+if __name__ == '__main__':
+
+    main()
